@@ -1,0 +1,63 @@
+from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks
+from sqlalchemy.orm import Session
+from app.database import get_db, SessionLocal
+from app.models.exam import Question, Rubric, DocumentStatus
+from app.services.file_service import save_file, convert_file_to_base64_images, extract_text_from_document
+from app.services.ocr_service import process_rubric_ocr, structure_rubric_text
+from app.schemas.rubric import RubricResponse
+
+router = APIRouter()
+
+def rubric_background_task(file_path: str, rubric_id: int):
+    db = SessionLocal()
+    try:
+        db_rubric = db.query(Rubric).filter(Rubric.id == rubric_id).first()
+        db_rubric.ocr_status = DocumentStatus.PROCESSING
+        db.commit()
+
+        # HYBRID LOGIC: Check file extension
+        if file_path.lower().endswith(('.docx', '.txt', '.csv')):
+            # Instant text extraction -> Fast text AI structuring
+            raw_text = extract_text_from_document(file_path)
+            structured_json = structure_rubric_text(raw_text)
+        else:
+            # Vision AI path for PDFs/Images
+            images = convert_file_to_base64_images(file_path)
+            structured_json = process_rubric_ocr(images)
+
+        db_rubric.structured_data = structured_json
+        db_rubric.ocr_status = DocumentStatus.READY
+        db.commit()
+    except Exception as e:
+        db_rubric.ocr_status = DocumentStatus.FAILED
+        db.commit()
+    finally:
+        db.close()
+
+@router.post("/upload", response_model=RubricResponse)
+async def upload_rubric(
+    background_tasks: BackgroundTasks,
+    question_id: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    question = db.query(Question).filter(Question.id == question_id).first()
+    if not question:
+        raise HTTPException(status_code=404, detail="Question not found.")
+
+    file_path = save_file(file, folder="rubrics")
+    
+    db_rubric = db.query(Rubric).filter(Rubric.question_id == question_id).first()
+    if db_rubric:
+        db_rubric.file_path = file_path
+        db_rubric.ocr_status = DocumentStatus.UPLOADED
+        db_rubric.structured_data = None
+    else:
+        db_rubric = Rubric(question_id=question_id, file_path=file_path, ocr_status=DocumentStatus.UPLOADED)
+        db.add(db_rubric)
+        
+    db.commit()
+    db.refresh(db_rubric)
+
+    background_tasks.add_task(rubric_background_task, file_path, db_rubric.id)
+    return db_rubric
