@@ -25,3 +25,13 @@ Thumbs.db
 *.njsproj
 *.sln
 *.swp
+
+# === Frontend 2 (Next.js & Bun) ===
+**/frontend2/node_modules/
+**/frontend2/.next/
+**/frontend2/.env
+**/frontend2/db/*.db
+**/frontend2/db/*.db-journal
+**/frontend2/download/
+**/frontend2/upload/
+**/frontend2/tool-results/

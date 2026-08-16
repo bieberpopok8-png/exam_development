@@ -1,0 +1,37 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Exam {
+  id        Int       @id @default(autoincrement())
+  title     String
+  createdAt DateTime  @default(now())
+  questions Question[]
+}
+
+model Question {
+  id          Int      @id @default(autoincrement())
+  examId      Int
+  text        String?
+  rubricData  Json?    // Stores the AI-extracted rubric [{id, criterion, points}]
+  answers     Answer[]
+  
+  exam        Exam     @relation(fields: [examId], references: [id], onDelete: Cascade)
+}
+
+model Answer {
+  id          Int      @id @default(autoincrement())
+  questionId  Int
+  studentName String
+  fileUrl     String?  // If you save the PDF to S3 or local disk
+  ocrText     String?  // Stores the text extracted by Qwen-VL
+  gradeData   Json?    // Stores the AI grading result [{id, awarded_points, quote, explanation}]
+  totalScore  Int?     // Stores the final calculated score
+  
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+}
