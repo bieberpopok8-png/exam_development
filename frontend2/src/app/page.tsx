@@ -24,7 +24,7 @@ export default function Page() {
   }, [refresh])
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
+    <div className="min-h-screen flex flex-col bg-background" suppressHydrationWarning>
       {view === "home" ? (
         <HomeView exams={exams} />
       ) : (

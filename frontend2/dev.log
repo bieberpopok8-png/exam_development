@@ -1,0 +1,17 @@
+▲ Next.js 16.3.0 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.100.184:3000
+✓ Ready in 17.0s
+⚠ Warning: Next.js ignored package-lock.json in D:\CODING\Python because it is outside the current Git repository (D:\CODING\Python\exam_development).
+ To use this directory, set `turbopack.root` in your Next.js config.
+
+✓ Running next.config.ts took 694ms
+Attention: Next.js now collects completely anonymous telemetry regarding usage.
+This information is used to shape Next.js' roadmap and prioritize features.
+You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+https://nextjs.org/telemetry
+
+
+✓ Generated AGENTS.md and CLAUDE.md for AI agents. Set `agentRules: false` in next.config to disable.
+○ Compiling / ...
+ GET / 200 in 17.3s (next.js: 16.7s, application-code: 587ms)

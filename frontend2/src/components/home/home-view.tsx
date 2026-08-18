@@ -149,7 +149,7 @@ export function HomeView({ exams }: { exams: Exam[] }) {
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex min-h-screen flex-col" suppressHydrationWarning>
       {/* Top bar */}
       <header className="sticky top-0 z-30 border-b border-border/70 bg-background/80 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
