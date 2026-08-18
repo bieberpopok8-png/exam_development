@@ -1,3 +1,4 @@
+import os
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.database import get_db, SessionLocal
@@ -10,8 +11,12 @@ router = APIRouter()
 
 def rubric_background_task(file_path: str, rubric_id: int):
     db = SessionLocal()
+    db_rubric = None  # FIXED: Pre-initialize to prevent NameError in except block
     try:
         db_rubric = db.query(Rubric).filter(Rubric.id == rubric_id).first()
+        if not db_rubric:
+            return  # FIXED: Early exit if rubric doesn't exist
+
         db_rubric.ocr_status = DocumentStatus.PROCESSING
         db.commit()
 
@@ -29,8 +34,10 @@ def rubric_background_task(file_path: str, rubric_id: int):
         db_rubric.ocr_status = DocumentStatus.READY
         db.commit()
     except Exception as e:
-        db_rubric.ocr_status = DocumentStatus.FAILED
-        db.commit()
+        # FIXED: Only update status if db_rubric was successfully fetched
+        if db_rubric:
+            db_rubric.ocr_status = DocumentStatus.FAILED
+            db.commit()
     finally:
         db.close()
 
@@ -45,19 +52,24 @@ async def upload_rubric(
     if not question:
         raise HTTPException(status_code=404, detail="Question not found.")
 
-    file_path = save_file(file, folder="rubrics")
-    
-    db_rubric = db.query(Rubric).filter(Rubric.question_id == question_id).first()
-    if db_rubric:
-        db_rubric.file_path = file_path
-        db_rubric.ocr_status = DocumentStatus.UPLOADED
-        db_rubric.structured_data = None
-    else:
-        db_rubric = Rubric(question_id=question_id, file_path=file_path, ocr_status=DocumentStatus.UPLOADED)
-        db.add(db_rubric)
-        
-    db.commit()
-    db.refresh(db_rubric)
+    # FIXED: Clean up old file if rubric already exists (prevents orphaned files on disk)
+    existing_rubric = db.query(Rubric).filter(Rubric.question_id == question_id).first()
+    if existing_rubric and existing_rubric.file_path:
+        if os.path.exists(existing_rubric.file_path):
+            os.remove(existing_rubric.file_path)
 
-    background_tasks.add_task(rubric_background_task, file_path, db_rubric.id)
-    return db_rubric
+    file_path = save_file(file, folder="rubrics")
+
+    if existing_rubric:
+        existing_rubric.file_path = file_path
+        existing_rubric.ocr_status = DocumentStatus.UPLOADED
+        existing_rubric.structured_data = None
+    else:
+        existing_rubric = Rubric(question_id=question_id, file_path=file_path, ocr_status=DocumentStatus.UPLOADED)
+        db.add(existing_rubric)
+
+    db.commit()
+    db.refresh(existing_rubric)
+
+    background_tasks.add_task(rubric_background_task, file_path, existing_rubric.id)
+    return existing_rubric

@@ -1,6 +1,5 @@
 import requests
 import json
-import re
 from fastapi import HTTPException
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -34,11 +33,29 @@ Output ONLY the exact raw text you see. Do not add any conversational filler.
 # --- HELPER FUNCTIONS ---
 
 def extract_json_from_text(text: str) -> dict:
-    """Finds a JSON object in a string and parses it."""
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        return json.loads(match.group(0))
-    raise ValueError("No JSON found in text")
+    """
+    FIXED: Finds the FIRST valid JSON object in a string and parses it.
+    Uses balanced brace matching instead of greedy regex to handle
+    cases where the AI returns multiple concatenated JSON objects.
+    """
+    start = text.find('{')
+    while start != -1:
+        # Find matching closing brace by tracking depth
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    # Found a complete, balanced JSON object
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        # This block wasn't valid JSON, try next '{'
+                        break
+        start = text.find('{', start + 1)
+    raise ValueError("No valid JSON found in text")
 
 # --- AI PROCESSING FUNCTIONS ---
 
@@ -55,7 +72,8 @@ def process_rubric_ocr(images_base64: list[str]) -> list:
         "options": {"temperature": 0.1}
     }
     
-    response = requests.post(OLLAMA_URL, json=payload)
+    # FIXED: Added timeout to prevent infinite hangs
+    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
     response.raise_for_status()
     
     content = response.json()["message"]["content"]
@@ -65,7 +83,7 @@ def process_rubric_ocr(images_base64: list[str]) -> list:
 def structure_rubric_text(raw_text: str) -> list:
     """Uses fast text-only AI to structure rubric JSON from raw text (DOCX/TXT uploads)."""
     payload = {
-        "model": "qwen3:4b",  # Fast text-only model
+        "model": "qwen3:4b",
         "messages": [
             {"role": "system", "content": RUBRIC_PROMPT},
             {"role": "user", "content": raw_text}
@@ -75,7 +93,8 @@ def structure_rubric_text(raw_text: str) -> list:
         "options": {"temperature": 0.1}
     }
     
-    response = requests.post(OLLAMA_URL, json=payload)
+    # FIXED: Added timeout
+    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
     response.raise_for_status()
     
     content = response.json()["message"]["content"]
@@ -94,7 +113,8 @@ def process_student_ocr(images_base64: list[str]) -> str:
         "options": {"temperature": 0.1}
     }
     
-    response = requests.post(OLLAMA_URL, json=payload)
+    # FIXED: Added timeout
+    response = requests.post(OLLAMA_URL, json=payload, timeout=120)
     response.raise_for_status()
     
     return response.json()["message"]["content"]

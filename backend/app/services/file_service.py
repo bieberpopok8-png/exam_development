@@ -1,18 +1,22 @@
 import os
-import fitz  # PyMuPDF
+import pymupdf  # Fixed: fitz is deprecated, use pymupdf directly
 import base64
+import uuid
 from fastapi import UploadFile, HTTPException
 from docx import Document
 
 def save_file(file: UploadFile, folder: str = "rubrics") -> str:
-    # 1. Added .docx, .txt, .csv to allowed list
     if not file.filename.endswith(('.pdf', '.png', '.jpg', '.jpeg', '.docx', '.txt', '.csv')):
         raise HTTPException(status_code=400, detail="PDF, Image, DOCX, TXT, or CSV files are allowed")
     
     upload_dir = f"uploads/{folder}"
     os.makedirs(upload_dir, exist_ok=True)
+    
+    # FIXED: Add unique prefix to prevent silent file overwrites
     safe_filename = file.filename.replace(" ", "_")
-    file_path = os.path.join(upload_dir, safe_filename)
+    unique_prefix = uuid.uuid4().hex[:8]
+    unique_filename = f"{unique_prefix}_{safe_filename}"
+    file_path = os.path.join(upload_dir, unique_filename)
     
     with open(file_path, "wb") as buffer:
         buffer.write(file.file.read())
@@ -24,7 +28,7 @@ def convert_file_to_base64_images(file_path: str, target_dpi: int = 150) -> list
     images_base64 = []
     
     if file_path.lower().endswith('.pdf'):
-        doc = fitz.open(file_path)
+        doc = pymupdf.open(file_path)  # Fixed: use pymupdf instead of fitz
         for page in doc:
             pix = page.get_pixmap(dpi=target_dpi, alpha=False)
             img_bytes = pix.tobytes("png")
@@ -40,7 +44,6 @@ def convert_file_to_base64_images(file_path: str, target_dpi: int = 150) -> list
         
     return images_base64
 
-# 2. NEW FUNCTION: Instant text extraction for docx/txt/csv
 def extract_text_from_document(file_path: str) -> str:
     """Extract raw text from docx, txt, or csv instantly without AI."""
     text = ""

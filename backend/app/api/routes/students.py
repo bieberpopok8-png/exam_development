@@ -10,8 +10,12 @@ router = APIRouter()
 
 def student_background_task(file_path: str, student_id: int):
     db = SessionLocal()
+    db_student = None  # FIXED: Pre-initialize to prevent NameError in except block
     try:
         db_student = db.query(StudentAnswer).filter(StudentAnswer.id == student_id).first()
+        if not db_student:
+            return  # FIXED: Early exit if student doesn't exist
+
         db_student.ocr_status = DocumentStatus.PROCESSING
         db.commit()
 
@@ -28,8 +32,10 @@ def student_background_task(file_path: str, student_id: int):
         db_student.ocr_status = DocumentStatus.READY
         db.commit()
     except Exception as e:
-        db_student.ocr_status = DocumentStatus.FAILED
-        db.commit()
+        # FIXED: Only update status if db_student was successfully fetched
+        if db_student:
+            db_student.ocr_status = DocumentStatus.FAILED
+            db.commit()
     finally:
         db.close()
 
@@ -46,7 +52,7 @@ async def upload_student_answer(
         raise HTTPException(status_code=404, detail="Question not found.")
 
     file_path = save_file(file, folder="students")
-    
+
     db_student = StudentAnswer(
         question_id=question_id,
         student_name=student_name,
