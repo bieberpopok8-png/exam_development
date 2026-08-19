@@ -2,37 +2,66 @@
 # FIXED: Use ** to catch ALL nested __pycache__ dirs, not just top two
 **/__pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
+venv/
 backend/venv/
-backend/.env
+env/
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
 
 # Local upload storage (keeps directory structure but ignores content)
-backend/uploads/rubrics/*
-backend/uploads/students/*
-!backend/uploads/rubrics/.gitkeep
-!backend/uploads/students/.gitkeep
+backend/uploads/
+uploads/
+!backend/uploads/.gitkeep
+!uploads/.gitkeep
+
+# Logs
+*.log
+logs/
+*.log
+
+# IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
 
 # === Frontend / Node ===
 frontend/node_modules/
 frontend/dist/
+frontend/build/
+frontend/.next/
+frontend/out/
 frontend/.env*
+frontend/package-lock.json
+frontend/yarn.lock
+frontend/pnpm-lock.yaml
 
-# === OS & IDE Files ===
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.swp
+# === Testing ===
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+*.cover
 
-# === Frontend 2 (Next.js & Bun) ===
-**/frontend2/node_modules/
-**/frontend2/.next/
-**/frontend2/.env
-**/frontend2/db/*.db
-**/frontend2/db/*.db-journal
-**/frontend2/download/
-**/frontend2/upload/
-**/frontend2/tool-results/
+# === Misc ===
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# Keep upload directory structure
+!backend/uploads/rubrics/.gitkeep
+!backend/uploads/students/.gitkeep

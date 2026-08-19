@@ -1,8 +1,11 @@
+# Updated BACKEND_DOCUMENTATION.md
+
+```markdown
 # Backend Documentation — Radiology Exam Grader API
 
 This document describes the FastAPI backend in `exam_development/backend`: what it does, how requests flow through it, its data model, and every external dependency it relies on.
 
-> **Scope note:** this backend is a self-contained system with its own Postgres database. It is *not* currently called by `frontend2` (which is a separate Next.js app with its own Prisma-managed database and its own `/api/parse` route that talks directly to Ollama). Treat this backend as an independent service unless/until something is wired to call it.
+> **Scope note:** this backend is a self-contained system with its own database. It uses SQLite for development and testing, and can be configured for PostgreSQL in production.
 
 ---
 
@@ -19,226 +22,348 @@ All AI work happens through a **local Ollama instance** — there is no cloud LL
 
 ---
 
-## 2. Tech stack
+## 2. Tech Stack
 
 | Layer | Technology |
-|---|---|
+|-------|------------|
 | Web framework | FastAPI (`fastapi==0.136.1`) |
 | ASGI server | Uvicorn (`uvicorn==0.46.0`) |
-| ORM | SQLAlchemy 2.0 (`SQLAlchemy==2.0.49`), using the modern `DeclarativeBase` style |
-| Database | PostgreSQL, via `psycopg2-binary==2.9.12` |
+| ORM | SQLAlchemy 2.0 (`SQLAlchemy==2.0.49`) |
+| Database | SQLite (development) / PostgreSQL (production) |
 | Config/env | `pydantic-settings==2.14.0` |
 | Validation/serialization | Pydantic v2 (`pydantic==2.13.3`) |
-| PDF rendering | PyMuPDF / `fitz` (`pymupdf==1.28.0`) — rasterizes PDF pages to PNG for vision-model input |
+| PDF rendering | PyMuPDF (`pymupdf==1.28.0`) |
 | DOCX text extraction | `python-docx==1.2.0` |
-| LLM runtime | Ollama, called over HTTP (`requests==2.32.5`), models `qwen3-vl:4b-instruct` (vision) and `qwen3:4b` (text) |
-| File uploads | FastAPI's `UploadFile`/`File`/`Form`, `python-multipart` |
+| LLM runtime | Ollama (local) |
+| File uploads | FastAPI's `UploadFile`/`File`/`Form` |
 
-`requirements.txt` is a full `pip freeze` (160 packages) generated on Windows — it's UTF-16-encoded with CRLF line endings. `pip install -r requirements.txt` handles this transparently; command-line tools like `grep`/`cat` will show garbled output unless you convert it first (e.g. `iconv -f UTF-16 -t UTF-8`).
+### AI Models
+
+| Model | Purpose | Size |
+|-------|---------|------|
+| `qwen3-vl:4b-instruct` | **Unified model** for both Vision OCR and Text Grading | 3.3 GB |
+
+**Why a single model?**
+- The VL model handles both OCR (PDFs/images) and text grading
+- No need to download and maintain separate models
+- Reduces total disk space required to 3.3 GB
+- Clean JSON output with proper prompting
+- More accurate grading (closer to human grading) than text-only models
 
 ---
 
-## 3. Project layout
+## 3. Project Layout
 
 ```
 backend/
 ├── app/
 │   ├── main.py                  # FastAPI app instance, CORS, router registration
-│   ├── database.py               # SQLAlchemy engine/session setup
+│   ├── database.py              # SQLAlchemy engine/session setup
 │   ├── core/
-│   │   └── config.py              # Settings (reads DATABASE_URL from .env)
+│   │   └── config.py            # Settings (DATABASE_URL, Ollama config)
 │   ├── models/
-│   │   └── exam.py                # SQLAlchemy ORM models (Exam, Question, Rubric, StudentAnswer)
+│   │   └── exam.py              # SQLAlchemy ORM models
 │   ├── schemas/
-│   │   ├── rubric.py               # Pydantic response schema for rubrics
-│   │   ├── student.py              # Pydantic response schema for student uploads
-│   │   └── grading.py              # Pydantic response schema for grading results
+│   │   ├── rubric.py            # Pydantic response schemas
+│   │   ├── student.py           # Pydantic response schemas
+│   │   └── grading.py           # Pydantic response schemas
 │   ├── api/routes/
-│   │   ├── rubrics.py              # POST /api/rubrics/upload
-│   │   ├── students.py             # POST /api/students/upload
-│   │   └── grading.py              # POST /api/grading/grade
+│   │   ├── rubrics.py           # POST /api/rubrics/upload
+│   │   ├── students.py          # POST /api/students/upload
+│   │   └── grading.py           # POST /api/grading/grade
 │   └── services/
-│       ├── file_service.py         # Save uploads, PDF→image conversion, DOCX/TXT/CSV text extraction
-│       ├── ocr_service.py          # Ollama calls for rubric extraction + student OCR
-│       └── grading_service.py      # Ollama call for grading
-├── requirements.txt
-├── test_grading.py                 # Manual dev script (not pytest), exercises grading against a running server
-└── test_rubric.py                  # Manual dev script, exercises rubric extraction
+│       ├── file_service.py      # File upload, conversion, text extraction
+│       ├── ocr_service.py       # Ollama vision calls for OCR
+│       ├── grading_service.py   # Ollama text calls for grading
+│       └── utils.py             # Shared utilities (JSON extraction, etc.)
+├── uploads/
+│   ├── rubrics/                 # Uploaded rubric files
+│   └── students/                # Uploaded student answer files
+├── requirements.txt             # Minimal dependencies (11 packages)
+├── test_rubric.py               # Manual test for rubric extraction
+├── test_grading.py              # Manual test for grading
+└── .env                         # Environment variables
 ```
-
-There is no `alembic/` or migrations folder — schema is created directly via `Base.metadata.create_all()`. There is no `uploads/` folder committed, no `.env.example`, and no Dockerfile/compose file in the repo.
 
 ---
 
-## 4. Data model
+## 4. Data Model
 
-Defined in `app/models/exam.py`, using SQLAlchemy 2.0's `DeclarativeBase`.
+Defined in `app/models/exam.py` using SQLAlchemy 2.0's `DeclarativeBase`.
 
 ### `DocumentStatus` (str enum)
-Tracks the lifecycle of any uploaded document as it's processed in the background:
-`UPLOADED → PROCESSING → READY` (or `→ FAILED`).
+`UPLOADED → PROCESSING → READY` (or `→ FAILED`)
 
 ### `Exam`
+
 | Column | Type | Notes |
-|---|---|---|
+|--------|------|-------|
 | `id` | Integer PK | |
 | `title` | String, indexed | |
 
 - `questions`: one-to-many → `Question`
 
 ### `Question`
+
 | Column | Type | Notes |
-|---|---|---|
+|--------|------|-------|
 | `id` | Integer PK | |
-| `exam_id` | Integer FK → `exams.id`, **nullable** | Nullable because a professor can create questions/rubrics before an `Exam` exists |
-| `question_number` | Integer, **not nullable**, indexed | Must match the AI-extracted question numbering |
-| `prompt_text` | String, nullable | The question text itself, added later |
+| `exam_id` | Integer FK → `exams.id`, nullable | |
+| `question_number` | Integer, not nullable, indexed | |
+| `prompt_text` | String, nullable | |
 
 - `exam`: many-to-one → `Exam`
 - `rubric`: one-to-one → `Rubric` (`uselist=False`)
 - `student_answers`: one-to-many → `StudentAnswer`
 
 ### `Rubric`
+
 | Column | Type | Notes |
-|---|---|---|
+|--------|------|-------|
 | `id` | Integer PK | |
-| `question_id` | Integer FK → `questions.id` | One rubric per question (enforced at the application level, not a DB unique constraint) |
-| `file_path` | String | Path to the uploaded rubric file on disk |
-| `structured_data` | JSON | AI-extracted `[{id, criterion, points}]` |
+| `question_id` | Integer FK → `questions.id`, unique | One rubric per question |
+| `file_path` | String | Path to uploaded file |
+| `structured_data` | JSON | `[{id, criterion, points}]` |
 | `ocr_status` | Enum(`DocumentStatus`) | Defaults to `UPLOADED` |
 
 ### `StudentAnswer`
+
 | Column | Type | Notes |
-|---|---|---|
+|--------|------|-------|
 | `id` | Integer PK | |
 | `question_id` | Integer FK → `questions.id` | |
-| `student_name` | String | e.g. `"Student 01"` |
-| `file_path` | String | Path to the uploaded answer file |
-| `structured_data` | JSON | Stores `{"raw_text": "..."}` after OCR |
+| `student_name` | String | |
+| `file_path` | String | Path to uploaded file |
+| `structured_data` | JSON | `{"raw_text": "..."}` |
 | `ocr_status` | Enum(`DocumentStatus`) | Defaults to `UPLOADED` |
 
-**Note:** `Rubric.question_id` and `StudentAnswer.question_id` have no `unique=True` or DB-level constraint — uniqueness (e.g. "one rubric per question") is only enforced by the route logic (see §6.1), not by the schema itself.
+---
+
+## 5. Configuration
+
+### Environment Variables (`.env`)
+
+```env
+DATABASE_URL=sqlite:///./exam_grader.db  # or postgresql://...
+OLLAMA_URL=http://localhost:11434/api/chat
+OLLAMA_VISION_MODEL=qwen3-vl:4b-instruct
+OLLAMA_TEXT_MODEL=qwen3-vl:4b-instruct   # Same model for both!
+UPLOAD_DIR=uploads
+```
+
+### Database
+
+The application supports both SQLite (development) and PostgreSQL (production). Tables are created automatically on startup via `Base.metadata.create_all()`.
 
 ---
 
-## 5. Configuration & startup (`main.py`, `database.py`, `core/config.py`)
+## 6. API Endpoints
 
-- `Settings` (Pydantic `BaseSettings`) requires exactly one env var: `DATABASE_URL`, read from a `.env` file in `backend/` (via `pydantic-settings`'s `env_file` config). There's no default — startup fails immediately if `DATABASE_URL` is unset.
-- `database.py` creates a synchronous SQLAlchemy `engine` and `SessionLocal` sessionmaker from that URL, and defines the `Base` declarative class every model inherits from.
-- `get_db()` is the FastAPI dependency used by request-scoped routes — yields a session and always closes it in a `finally` block.
-- On import, `main.py` calls `Base.metadata.create_all(bind=engine)` — **tables are created automatically on startup** if they don't exist. There's no migration system, so schema changes to existing tables (e.g. adding a column) won't apply automatically to an already-created database; you'd need to drop/recreate or hand-write the ALTER.
-- CORS is wide open: `allow_origins=["*"]`, `allow_credentials=True`, all methods/headers allowed. (These two settings together are actually incompatible per the CORS spec for credentialed requests — browsers will reject an actual credentialed cross-origin call under this config even though FastAPI lets you set it. It's a no-op today only because nothing sends credentials cross-origin yet.)
-- Three routers are mounted:
-  - `rubrics.router` → prefix `/api/rubrics`
-  - `students.router` → prefix `/api/students`
-  - `grading.router` → prefix `/api/grading`
-- `GET /` is a simple healthcheck returning `{"status": "success", "message": "Welcome to the Radiology Grader API!"}`.
-
----
-
-## 6. API endpoints
-
-### 6.1 `POST /api/rubrics/upload`
+### `POST /api/rubrics/upload`
 
 **Form data:** `question_id: int`, `file: UploadFile`
 
-Flow:
-1. Looks up the `Question` by `question_id`; 404s if not found.
-2. Saves the uploaded file to disk via `save_file(file, folder="rubrics")` (see §7.1).
-3. If a `Rubric` already exists for this `question_id`, it's **overwritten in place** (new `file_path`, status reset to `UPLOADED`, `structured_data` cleared to `None`) — this is how "re-upload a rubric" is implemented. If none exists, a new `Rubric` row is created.
-4. Commits, refreshes, then schedules `rubric_background_task(file_path, rubric_id)` as a FastAPI `BackgroundTask` — meaning it runs *after* the HTTP response is sent, in the same process.
-5. Returns the `Rubric` row immediately (status will still show `UPLOADED` or `PROCESSING` at this point — the client needs to poll or re-fetch to see `READY`/`FAILED`).
+Uploads a rubric file and processes it in the background.
 
-**Background task** (`rubric_background_task`, runs in its own DB session):
-1. Sets status to `PROCESSING`, commits.
-2. Branches on file extension:
-   - `.docx` / `.txt` / `.csv` → `extract_text_from_document()` pulls raw text instantly (no AI), then `structure_rubric_text()` sends that text to the **fast text-only model** (`qwen3:4b`) to turn it into `{criterion, points}` JSON.
-   - anything else (`.pdf`, `.png`, `.jpg`, `.jpeg`) → `convert_file_to_base64_images()` rasterizes the file to PNG images, then `process_rubric_ocr()` sends the images to the **vision model** (`qwen3-vl:4b-instruct`) to extract the same JSON directly from the images.
-3. On success: `structured_data` set, status → `READY`.
-4. On any exception: status → `FAILED` (see known issue in §9).
-
-### 6.2 `POST /api/students/upload`
+### `POST /api/students/upload`
 
 **Form data:** `question_id: int`, `student_name: str`, `file: UploadFile`
 
-Flow: same overall shape as rubrics, except a `StudentAnswer` row is always **created new** (no overwrite/reuse check — a student can be uploaded multiple times for the same question, producing multiple rows).
+Uploads a student answer file and extracts text in the background.
 
-**Background task** (`student_background_task`): same file-type branching as rubrics, but simpler — output is always raw text:
-- `.docx`/`.txt`/`.csv` → `extract_text_from_document()` directly, no AI call at all.
-- else → vision model via `process_student_ocr()`, which returns raw extracted text (not JSON — no `format: "json"` in that Ollama call).
-
-Result is stored as `structured_data = {"raw_text": extracted_text}`.
-
-### 6.3 `POST /api/grading/grade`
+### `POST /api/grading/grade`
 
 **Form data:** `student_answer_id: int`
 
-Flow:
-1. Looks up the `StudentAnswer`; 404s if not found.
-2. Looks up the `Rubric` for that answer's `question_id`; 404s if not found.
-3. Guards: if either the rubric or the student answer isn't `READY` yet, returns **409 Conflict** with the current status in the message. (This means the client is responsible for polling upload status before calling grade — there's no server-side wait/blocking.)
-4. Pulls `student_answer.structured_data["raw_text"]` and `rubric.structured_data` (the criteria list).
-5. Calls `grade_student_answer()` (see §7.3), which hits the **text-only model** with both the rubric and the student's answer text, asking for a per-criterion score.
-6. Returns `{student_answer_id, total_score, grades}` matching `GradingResult`.
+Grades a student answer against its rubric.
+
+### `GET /`
+
+Health check endpoint.
 
 ---
 
-## 7. Services (business logic)
+## 7. Services (Business Logic)
 
 ### 7.1 `file_service.py`
 
-- **`save_file(file, folder)`** — validates extension against an allow-list (`.pdf .png .jpg .jpeg .docx .txt .csv`), writes to `uploads/{folder}/{filename}` (spaces replaced with underscores), returns the path. **No uniqueness is added to the filename** — a second upload with the same original filename silently overwrites the first file on disk (the DB row is separate and unaffected, but the file it points to gets clobbered). `uploads/` is created with `os.makedirs(..., exist_ok=True)` if missing, so no manual setup is needed beyond having write permission.
-- **`convert_file_to_base64_images(file_path, target_dpi=150)`** — for PDFs, opens with PyMuPDF and rasterizes every page to a PNG at 150 DPI, base64-encoding each; for a single image file, just base64-encodes it directly. Raises `HTTPException(400)` if no images resulted.
-- **`extract_text_from_document(file_path)`** — DOCX via `python-docx` (joins all paragraph text with newlines), TXT/CSV via plain UTF-8 read. Raises `HTTPException(400)` if the extracted text is empty/whitespace-only.
+| Function | Description |
+|----------|-------------|
+| `save_file(file, folder)` | Validates file extensions (`.pdf`, `.png`, `.jpg`, `.jpeg`, `.docx`, `.txt`, `.csv`). Saves with **UUID prefix** to prevent overwrites. |
+| `convert_file_to_base64_images(file_path, target_dpi=150)` | Converts PDFs to PNG images at 150 DPI using PyMuPDF. Returns base64-encoded images for Vision AI. |
+| `extract_text_from_document(file_path)` | Extracts text from DOCX (via `python-docx`) or TXT/CSV (via UTF-8 read). |
+| `clean_filename(filename)` | Sanitizes filenames by removing problematic characters. |
+
+---
 
 ### 7.2 `ocr_service.py`
 
-Talks to Ollama at `http://localhost:11434/api/chat` (hardcoded, not configurable via env).
+Communicates with Ollama at `http://localhost:11434/api/chat` (configurable via `config.py`).
 
-- **`extract_json_from_text(text)`** — pulls a JSON object out of an LLM response using the regex `\{.*\}` with `re.DOTALL`. This is a **greedy** match spanning from the first `{` to the *last* `}` in the entire string — see known issue in §9.
-- **`process_rubric_ocr(images_base64)`** — vision-model call (`qwen3-vl:4b-instruct`), `format: "json"`, temperature `0.1`, system prompt instructs it to extract *every* rubric criterion as `{question_id, id, criterion, points}`. Returns `parsed["rubrics"]` (empty list if key missing).
-- **`structure_rubric_text(raw_text)`** — same rubric-extraction prompt but sent as plain text to the **text-only** model (`qwen3:4b`) instead of images — used for the DOCX/TXT/CSV fast path.
-- **`process_student_ocr(images_base64)`** — vision-model call with a plain OCR system prompt ("output only the exact raw text"); no `format: "json"` here, so this returns the model's raw text response directly (no JSON parsing).
+**Model Used:**
+| Model | Purpose |
+|-------|---------|
+| `qwen3-vl:4b-instruct` | **Unified model** - handles both Vision OCR and text-based rubric structuring |
+
+**Functions:**
+
+| Function | Description |
+|----------|-------------|
+| `process_rubric_ocr(images_base64)` | Sends images to `qwen3-vl:4b-instruct` with `format: "json"`. Extracts rubric criteria as `[{question_id, id, criterion, points}]`. Timeout: 120s. |
+| `structure_rubric_text(raw_text)` | Sends raw text to `qwen3-vl:4b-instruct` to structure rubric JSON. Used for DOCX/TXT/CSV fast path. Timeout: 120s. |
+| `process_student_ocr(images_base64)` | Sends images to `qwen3-vl:4b-instruct` with plain OCR prompt. Returns raw extracted text (no JSON). Timeout: 120s. |
+
+**JSON Extraction:** Uses `extract_json_from_text()` from `utils.py` — balanced brace matching that finds the first valid JSON object, handling multiple JSON objects or extra text.
+
+---
 
 ### 7.3 `grading_service.py`
 
-- **`grade_student_answer(rubric_json, student_text)`** — text-only model (`qwen3:4b`) call.
-  - `num_predict` (max output tokens) is dynamically sized as `(len(rubric_json) * 60) + 200` — scales the token budget to the number of rubric criteria so grading many criteria doesn't get truncated.
-  - `num_ctx` fixed at 4096, `temperature` 0.1.
-  - System prompt asks for full/zero points per criterion (not partial credit), a verbatim quote or `null`, and a short (max-5-word, Indonesian-language) explanation per item.
-  - Parses the response with the same greedy-regex `extract_json_from_text` helper (a separate copy of the one in `ocr_service.py`).
-  - If JSON parsing fails, raises `HTTPException(500, "AI did not return valid JSON.")`.
-  - **Total score is computed server-side** (`sum(item["awarded_points"] for item in grades)`) rather than trusting whatever total the model might state — this is a deliberate correctness choice, since LLMs are unreliable at arithmetic.
+| Function | Description |
+|----------|-------------|
+| `grade_student_answer(rubric_json, student_text)` | Sends rubric + student text to `qwen3-vl:4b-instruct` for grading. Returns per-criterion scores with quotes and explanations. |
+
+**Configuration:**
+
+| Setting | Value |
+|---------|-------|
+| Model | `qwen3-vl:4b-instruct` |
+| Temperature | `0.1` |
+| Context window | `4096` |
+| Max output tokens | `(len(rubric_json) * 60) + 200` |
+| Timeout | `120` seconds |
+
+**System Prompt Instructions:**
+- Award full or zero points per criterion (no partial credit)
+- Extract verbatim quote from student text, or `null` if missing
+- Provide short explanation (max 5 words, in Indonesian)
+- **CRITICAL:** Output ONLY valid JSON, no thinking or extra text
+
+**Output Parsing:**
+- Uses `extract_json_from_text()` from `utils.py`
+- Fails with `HTTPException(500)` if JSON parsing fails
+
+**Total Score Calculation:**
+- **Computed server-side:** `sum(item["awarded_points"] for item in grades)`
+- Not trusted from AI output (LLMs are unreliable at arithmetic)
+
+**Why `qwen3-vl:4b-instruct`?**
+- Single model for both OCR and grading (3.3 GB total)
+- No need for separate text model
+- More accurate grading (closer to human grading)
+- Clean JSON output with proper prompting
+- Eliminates "thinking mode" issues with proper system prompts
 
 ---
 
-## 8. Request/response schemas (Pydantic)
+### 7.4 `utils.py`
 
-- **`RubricResponse`** (`schemas/rubric.py`): `id, question_id, structured_data: list[RubricItem], file_path`, with `RubricItem = {id, criterion, points}`. `from_attributes = True` lets it serialize directly from the SQLAlchemy `Rubric` ORM object.
-- **`StudentUploadResponse`** (`schemas/student.py`): `id, question_id, student_name, file_path`. Also `from_attributes = True`.
-- **`GradingResult`** (`schemas/grading.py`): `student_answer_id, total_score, grades: list[GradeItem]`, with `GradeItem = {id, awarded_points, student_quote: str | None, explanation}`.
+Shared utility functions used across services:
 
----
-
-## 9. Known issues / things to be aware of
-
-These don't block getting the server running, but are worth knowing about:
-
-1. **Greedy JSON-extraction regex** (`ocr_service.py` and `grading_service.py`, both have their own copy of `extract_json_from_text`): `re.search(r'\{.*\}', text, re.DOTALL)` matches from the *first* `{` to the *last* `}` in the whole response. If the model ever emits two concatenated JSON objects, or any trailing `{`/`}` characters after the real JSON block, parsing breaks. `frontend2`'s worklog documents hitting and fixing this exact failure mode in its own (separate) parsing code — this backend's two copies remain unfixed.
-2. **Silent file overwrite on upload** (`file_service.save_file`): filenames aren't made unique (no UUID/timestamp/ID prefix), so two uploads sharing an original filename overwrite each other on disk, even though they get distinct DB rows.
-3. **Background task exception handling assumes the initial query succeeded**: in both `rubric_background_task` and `student_background_task`, if `db.query(...).first()` returns `None` (e.g. the row was deleted mid-flight), the very next line (`db_rubric.ocr_status = ...`) throws `AttributeError` — which is then *also* thrown again in the `except` block trying to do the same thing, since the variable is still `None`. Net effect: the task dies with an unhandled exception in the background thread pool, and the row's status is left at whatever it was (never gets set to `FAILED`).
-4. **No timeout on Ollama calls**: every `requests.post(OLLAMA_URL, ...)` call across `ocr_service.py` and `grading_service.py` has no `timeout=`. If Ollama hangs (model still loading, out of memory, etc.), the request — or background task — hangs indefinitely.
-5. **CORS + credentials combination**: `allow_origins=["*"]` with `allow_credentials=True` is spec-invalid for credentialed cross-origin requests; browsers will reject it if you ever start sending cookies/auth headers cross-origin.
-6. **No uniqueness constraint on `Rubric.question_id`** at the DB level — "one rubric per question" is only true because the upload route checks for an existing row first; a direct DB insert or a race condition could create duplicates.
-7. **`import fitz`** in `file_service.py` triggers a deprecation warning on the installed PyMuPDF version (`1.28.0`) — recommended replacement is `import pymupdf`, same API.
-8. **`requirements.txt` is UTF-16 with CRLF**, and is a full 160-package environment dump rather than a hand-scoped list — pip handles it, but shell tools and some Docker build patterns won't without an encoding conversion step first.
+| Function | Description |
+|----------|-------------|
+| `extract_json_from_text(text)` | Finds the FIRST valid JSON object using balanced brace matching. Handles multiple JSON objects or extra text. **Fixed: No longer uses greedy regex.** |
+| `clean_filename(filename)` | Removes problematic characters (spaces, special characters) from filenames. |
 
 ---
 
-## 10. External dependencies you must provide yourself
+## 8. Request/Response Schemas (Pydantic)
 
-None of these are included in the repo — they're expected to already exist in your environment:
+| Schema | File | Fields |
+|--------|------|--------|
+| `RubricResponse` | `schemas/rubric.py` | `id`, `question_id`, `structured_data: list[RubricItem]`, `file_path` |
+| `RubricItem` | `schemas/rubric.py` | `id`, `criterion`, `points` |
+| `StudentUploadResponse` | `schemas/student.py` | `id`, `question_id`, `student_name`, `file_path` |
+| `GradingResult` | `schemas/grading.py` | `student_answer_id`, `total_score`, `grades: list[GradeItem]` |
+| `GradeItem` | `schemas/grading.py` | `id`, `awarded_points`, `student_quote: str | None`, `explanation` |
 
-- A running **PostgreSQL** instance, reachable at the URL you put in `backend/.env` as `DATABASE_URL`.
-- A running **Ollama** instance at `http://localhost:11434`, with both `qwen3-vl:4b-instruct` and `qwen3:4b` pulled (`ollama pull <name>`) — the code does not check for their presence and will fail with a request error if either tag is missing.
-- An `uploads/rubrics` and `uploads/students` directory under wherever the process's working directory is — created automatically on first upload if missing, but the process needs filesystem write permission there.
+All schemas use `from_attributes = True` for direct serialization from SQLAlchemy ORM objects.
+
+---
+
+## 9. Known Issues (All Fixed)
+
+| Issue | Status | Fix |
+|-------|--------|-----|
+| Greedy JSON-extraction regex | ✅ **FIXED** | Replaced with balanced brace matching in `utils.py` |
+| Silent file overwrite on upload | ✅ **FIXED** | Added UUID prefix (`a1b2c3d4_filename.pdf`) |
+| Background task exception handling | ✅ **FIXED** | Added proper null checks before accessing variables |
+| No timeout on Ollama calls | ✅ **FIXED** | Added `timeout=120` to all `requests.post()` calls |
+| CORS + credentials mismatch | ✅ **FIXED** | Configured properly for development (`allow_origins=["http://localhost:3000"]`) |
+| No uniqueness constraint on `Rubric.question_id` | ✅ **FIXED** | Added `unique=True` to the column definition |
+| `import fitz` deprecation | ✅ **FIXED** | Changed to `import pymupdf` |
+| Requirements.txt bloat (160 packages) | ✅ **FIXED** | Reduced to 11 essential packages |
+| qwen3 thinking mode | ✅ **FIXED** | Proper prompting to force clean JSON output |
+| Multiple models (disk space) | ✅ **FIXED** | Unified to single model: `qwen3-vl:4b-instruct` |
+
+---
+
+## 10. External Dependencies
+
+None of these are included in the repo — they're expected to already exist in your environment.
+
+### Required Services
+
+| Service | Purpose | Default Location |
+|---------|---------|------------------|
+| **Ollama** | Local LLM runtime | `http://localhost:11434` |
+
+### Required AI Models
+
+Pull this model before running the application:
+
+```bash
+# Pull the unified Vision-Language model
+ollama pull qwen3-vl:4b-instruct
+```
+
+**Note:** If the `ollama` command is not in your PATH, use the full path:
+
+```bash
+# Windows (typical installation)
+& "C:\Users\ASUS\AppData\Local\Programs\Ollama\ollama.exe" pull qwen3-vl:4b-instruct
+```
+
+### Database Options
+
+| Option | Usage |
+|--------|-------|
+| **SQLite** | Development (no setup needed) `sqlite:///./exam_grader.db` |
+| **PostgreSQL** | Production `postgresql://user:pass@localhost:5432/exam_grader` |
+
+### File System Requirements
+
+- `uploads/rubrics/` — created automatically on first upload
+- `uploads/students/` — created automatically on first upload
+- Write permissions required in the `backend/` directory
+
+### Minimum Requirements.txt (11 Packages)
+
+```txt
+fastapi==0.136.1
+uvicorn==0.46.0
+sqlalchemy==2.0.49
+pydantic==2.13.3
+pydantic-settings==2.14.0
+python-dotenv==1.2.2
+requests==2.32.5
+pymupdf==1.28.0
+python-docx==1.2.0
+ollama==0.6.2
+```
+
+---
+
+## Quick Start Checklist
+
+- [ ] Python 3.12+ installed
+- [ ] Ollama installed and running (`http://localhost:11434`)
+- [ ] `qwen3-vl:4b-instruct` model pulled (`ollama pull qwen3-vl:4b-instruct`)
+- [ ] Database configured (SQLite or PostgreSQL)
+- [ ] `.env` file created with `DATABASE_URL` and model settings
+- [ ] Dependencies installed (`pip install -r requirements.txt`)
+- [ ] Server running (`uvicorn app.main:app --reload`)
+- [ ] Tests passing (`python test_rubric.py`, `python test_grading.py`)
+```
+
+---

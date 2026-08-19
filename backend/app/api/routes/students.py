@@ -10,11 +10,12 @@ router = APIRouter()
 
 def student_background_task(file_path: str, student_id: int):
     db = SessionLocal()
-    db_student = None  # FIXED: Pre-initialize to prevent NameError in except block
+    db_student = None
     try:
         db_student = db.query(StudentAnswer).filter(StudentAnswer.id == student_id).first()
+        # FIXED: Early exit if student doesn't exist
         if not db_student:
-            return  # FIXED: Early exit if student doesn't exist
+            return
 
         db_student.ocr_status = DocumentStatus.PROCESSING
         db.commit()
@@ -36,6 +37,7 @@ def student_background_task(file_path: str, student_id: int):
         if db_student:
             db_student.ocr_status = DocumentStatus.FAILED
             db.commit()
+        print(f"Background task failed for student {student_id}: {str(e)}")
     finally:
         db.close()
 
@@ -65,3 +67,23 @@ async def upload_student_answer(
 
     background_tasks.add_task(student_background_task, file_path, db_student.id)
     return db_student
+
+@router.get("/status/{student_id}")
+async def get_student_status(student_id: int, db: Session = Depends(get_db)):
+    """Check the processing status of a student answer."""
+    student = db.query(StudentAnswer).filter(StudentAnswer.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student answer not found.")
+    
+    return {
+        "id": student.id,
+        "status": student.ocr_status,
+        "is_ready": student.ocr_status == DocumentStatus.READY,
+        "has_text": student.structured_data is not None
+    }
+
+@router.get("/question/{question_id}")
+async def get_students_by_question(question_id: int, db: Session = Depends(get_db)):
+    """Get all student answers for a question."""
+    students = db.query(StudentAnswer).filter(StudentAnswer.question_id == question_id).all()
+    return students
