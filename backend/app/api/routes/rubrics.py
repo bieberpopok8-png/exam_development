@@ -6,16 +6,18 @@ from app.models.exam import Question, Rubric, DocumentStatus
 from app.services.file_service import save_file, convert_file_to_base64_images, extract_text_from_document
 from app.services.ocr_service import process_rubric_ocr, structure_rubric_text
 from app.schemas.rubric import RubricResponse
+from app.core.config import settings
 
 router = APIRouter()
 
 def rubric_background_task(file_path: str, rubric_id: int):
     db = SessionLocal()
-    db_rubric = None  # FIXED: Pre-initialize to prevent NameError in except block
+    db_rubric = None
     try:
         db_rubric = db.query(Rubric).filter(Rubric.id == rubric_id).first()
+        # FIXED: Early exit if rubric doesn't exist
         if not db_rubric:
-            return  # FIXED: Early exit if rubric doesn't exist
+            return
 
         db_rubric.ocr_status = DocumentStatus.PROCESSING
         db.commit()
@@ -38,6 +40,8 @@ def rubric_background_task(file_path: str, rubric_id: int):
         if db_rubric:
             db_rubric.ocr_status = DocumentStatus.FAILED
             db.commit()
+        # Log the error (optional)
+        print(f"Background task failed for rubric {rubric_id}: {str(e)}")
     finally:
         db.close()
 
@@ -52,7 +56,7 @@ async def upload_rubric(
     if not question:
         raise HTTPException(status_code=404, detail="Question not found.")
 
-    # FIXED: Clean up old file if rubric already exists (prevents orphaned files on disk)
+    # FIXED: Clean up old file if rubric already exists
     existing_rubric = db.query(Rubric).filter(Rubric.question_id == question_id).first()
     if existing_rubric and existing_rubric.file_path:
         if os.path.exists(existing_rubric.file_path):
@@ -73,3 +77,26 @@ async def upload_rubric(
 
     background_tasks.add_task(rubric_background_task, file_path, existing_rubric.id)
     return existing_rubric
+
+@router.get("/status/{rubric_id}")
+async def get_rubric_status(rubric_id: int, db: Session = Depends(get_db)):
+    """Check the processing status of a rubric."""
+    rubric = db.query(Rubric).filter(Rubric.id == rubric_id).first()
+    if not rubric:
+        raise HTTPException(status_code=404, detail="Rubric not found.")
+    
+    return {
+        "id": rubric.id,
+        "status": rubric.ocr_status,
+        "is_ready": rubric.ocr_status == DocumentStatus.READY,
+        "has_structure": rubric.structured_data is not None
+    }
+
+@router.get("/{rubric_id}")
+async def get_rubric(rubric_id: int, db: Session = Depends(get_db)):
+    """Get full rubric data including structured criteria."""
+    rubric = db.query(Rubric).filter(Rubric.id == rubric_id).first()
+    if not rubric:
+        raise HTTPException(status_code=404, detail="Rubric not found.")
+    
+    return rubric

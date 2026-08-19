@@ -8,12 +8,12 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Radiology Exam Grader API")
 
-# FIXED: allow_origins=["*"] + allow_credentials=True is rejected by browsers
-# Since this is a local app with no cookie-based auth yet, use credentials=False
+# FIXED: Proper CORS configuration
+# For development with frontend at localhost:3000
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,  # FIXED: was True
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

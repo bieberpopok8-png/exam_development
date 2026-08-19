@@ -1,7 +1,7 @@
 import requests
 import json
+import re
 
-# 1. The structured JSON Rubric we just proved we can create
 rubric_json = [
   {"question_id": "8", "id": 1, "criterion": "CT mastoid with IV contrast", "points": 5},
   {"question_id": "8", "id": 2, "criterion": "Hypodense soft tissue", "points": 10},
@@ -10,7 +10,6 @@ rubric_json = [
   {"question_id": "8", "id": 5, "criterion": "Sigmoid sinus thrombosis", "points": 15}
 ]
 
-# 2. A fake student answer (has some right, some wrong, some missing)
 student_answer = """
 Saya akan melakukan CT Scan Mastoid tanpa kontras. 
 Tampak adanya massa jaringan lunak di telinga tengah. 
@@ -18,14 +17,12 @@ Terdapat erosi pada tulang-tulang pendengaran.
 Diagnosis saya adalah kolesteatoma.
 """
 
-# 3. The strict prompt for grading
-system_prompt = """
-You are an expert radiology grading assistant. 
+system_prompt = """You are an expert radiology grading assistant. 
 Evaluate the student's answer against the provided rubric.
 
 Instructions:
 1. Evaluate each criterion independently.
-2. Award full points if the student mentions the concept (even using synonyms like "erosion of auditory ossicles" for "ossicular destruction").
+2. Award full points if the student mentions the concept.
 3. Award 0 points if the student completely misses or gets it wrong.
 4. Extract the EXACT quote from the student's text that matches the criterion. If missing, set student_quote to null.
 5. Calculate the total score.
@@ -41,31 +38,47 @@ Output ONLY a valid JSON object using this exact format:
     }
   ],
   "total_score": 0
-}
-"""
+}"""
 
 def grade_student_answer(rubric, student_text):
     url = "http://localhost:11434/api/chat"
+    
     payload = {
-        "model": "qwen3:8b",
+        "model": "mistral",  # <-- USING MISTRAL
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"RUBRIC:\n{json.dumps(rubric, indent=2)}\n\nSTUDENT ANSWER:\n{student_text}"}
         ],
-        "format": "json",
         "stream": False,
         "options": {
+            "temperature": 0.1,
             "num_predict": 2048
         }
     }
     
-    response = requests.post(url, json=payload)
+    print("Sending request to Mistral...")
+    response = requests.post(url, json=payload, timeout=120)
+    print(f"Response status: {response.status_code}")
     response.raise_for_status()
     
-    return response.json()["message"]["content"]
+    content = response.json()["message"]["content"]
+    print(f"Raw content length: {len(content)} characters")
+    print(f"Raw content preview: {content[:300]}...")
+    
+    return content
+
+def extract_json_from_text(text):
+    """Extract JSON from text."""
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except:
+            pass
+    return None
 
 if __name__ == "__main__":
-    print("Sending student answer to Qwen 3 8B for grading...")
+    print("Sending student answer to Mistral for grading...")
     result = grade_student_answer(rubric_json, student_answer)
     
     print("\n--- AI GRADING OUTPUT ---")
@@ -75,5 +88,12 @@ if __name__ == "__main__":
     try:
         parsed = json.loads(result)
         print(json.dumps(parsed, indent=2))
+        print(f"\n✅ Total Score: {parsed.get('total_score', 0)}")
     except Exception as e:
-        print(f"JSON Parsing Error: {e}")
+        print(f"❌ JSON Parsing Error: {e}")
+        parsed = extract_json_from_text(result)
+        if parsed:
+            print("\n✅ Extracted JSON from text:")
+            print(json.dumps(parsed, indent=2))
+        else:
+            print(f"\n❌ Could not parse JSON. Raw output:\n{result}")
