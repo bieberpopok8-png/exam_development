@@ -36,3 +36,6 @@ Thumbs.db
 **/frontend2/download/
 **/frontend2/upload/
 **/frontend2/tool-results/
+
+.agents/
+.claude/
