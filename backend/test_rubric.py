@@ -42,7 +42,7 @@ Output ONLY a valid JSON object using this exact format:
 def convert_rubric_to_json(raw_text):
     url = "http://localhost:11434/api/chat"
     payload = {
-        "model": "mistral",
+        "model": "qwen3-vl:4b-instruct",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": raw_text}
@@ -61,7 +61,7 @@ def convert_rubric_to_json(raw_text):
     return ai_message
 
 if __name__ == "__main__":
-    print("Sending rubric to Mistral...")
+    print("Sending rubric to qwen3:3b...")
     result = convert_rubric_to_json(fake_rubric_text)
     
     print("\n--- AI RAW OUTPUT ---")
